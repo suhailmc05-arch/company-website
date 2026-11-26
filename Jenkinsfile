@@ -124,7 +124,7 @@ pipeline {
         stage('Deploy Application') {
 
             agent {
-                label 'deploy-agent'
+                label 'deployment-agent'
             }
 
             stages {
