@@ -1,18 +1,3 @@
-// Jenkinsfile - Company Website CI/CD Pipeline
-
-// Helper: run commands on the deployment server using SSH.
-def runOnDeployServer(String command) {
-    withCredentials([
-        sshUserPrivateKey(
-            credentialsId: env.DEPLOYMENT_SSH_CREDENTIAL_ID,
-            keyFileVariable: 'SSH_KEY',
-            usernameVariable: 'SSH_USER'
-        )
-    ]) {
-        sh "ssh -i \$SSH_KEY -o StrictHostKeyChecking=accept-new " +
-           "\$SSH_USER@${env.DEPLOYMENT_SERVER_IP} '${command}'"
-    }
-}
 
 pipeline {
 
@@ -23,29 +8,23 @@ pipeline {
     }
 
     environment {
-
         DOCKERHUB_USERNAME = 'suhailmc'
-
-        DOCKERHUB_REPOSITORY = 'company-website'
-
         DOCKERHUB_CREDENTIAL_ID = 'dockerhub-credentials'
 
-        DEPLOYMENT_SERVER_IP = '172.31.34.107'
+        GITHUB_REPOSITORY_URL =
+            'https://github.com/suhailmc05-arch/company-website.git'
 
-        DEPLOYMENT_SSH_CREDENTIAL_ID = 'deployment-server-ssh'
-
-        GITHUB_REPOSITORY_URL = 'https://github.com/Suhailmc05-arch/Company-Website.git'
-
-        IMAGE_NAME = "${DOCKERHUB_USERNAME}/${DOCKERHUB_REPOSITORY}"
-
+        IMAGE_NAME = 'company-website'
         CONTAINER_NAME = 'company-website'
+        HOST_PORT = '9090'
+        CONTAINER_PORT = '80'
     }
 
     stages {
 
-        // PART 1: BUILD SERVER
+        // PART 1: BUILD AGENT
 
-        stage('Build Server Tasks') {
+        stage('Build and Push Docker Image') {
 
             agent {
                 label 'build-server'
@@ -60,9 +39,12 @@ pipeline {
                     }
                 }
 
-                stage('Docker Image Build') {
+                stage('Build Docker Image') {
                     steps {
-                        sh 'docker build -t $IMAGE_NAME:$BUILD_NUMBER -t $IMAGE_NAME:latest .'
+                        sh '''
+                            docker build \
+                                -t $IMAGE_NAME:$BUILD_NUMBER .
+                        '''
                     }
                 }
 
@@ -70,95 +52,89 @@ pipeline {
                     steps {
                         withCredentials([
                             usernamePassword(
-                                credentialsId: env.DOCKERHUB_CREDENTIAL_ID,
+                                credentialsId: DOCKERHUB_CREDENTIAL_ID,
                                 usernameVariable: 'DH_USER',
                                 passwordVariable: 'DH_PASS'
                             )
                         ]) {
-                            sh 'echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin'
+                            sh '''
+                                echo "$DH_PASS" | docker login \
+                                    -u "$DH_USER" \
+                                    --password-stdin
+                            '''
                         }
                     }
                 }
 
-                stage('Docker Image Push') {
+                stage('Push Docker Image') {
                     steps {
-                        sh 'docker push $IMAGE_NAME:$BUILD_NUMBER'
-                        sh 'docker push $IMAGE_NAME:latest'
+                        sh '''
+                            docker push $DOCKERHUB_USERNAME/$IMAGE_NAME:$BUILD_NUMBER
+                        '''
                     }
 
                     post {
                         always {
-                            sh 'docker logout'
+                            sh 'docker logout || true'
                         }
                     }
                 }
             }
         }
 
-        // PART 2: DEPLOYMENT SERVER
+        // PART 2: DEPLOYMENT AGENT
 
-        stage('Deployment Server Tasks') {
+        stage('Deploy Application') {
 
             agent {
-                label 'built-in'
+                label 'deploy-agent'
             }
 
             stages {
 
-                stage('Connect to Deployment Server') {
+                stage('Pull Docker Image') {
                     steps {
-                        script {
-                            runOnDeployServer(
-                                'hostname && docker --version'
-                            )
-                        }
-                    }
-                }
-
-                stage('Pull Latest Image') {
-                    steps {
-                        script {
-                            runOnDeployServer(
-                                "docker pull ${IMAGE_NAME}:latest"
-                            )
-                        }
+                        sh '''
+                            docker pull \
+                                $DOCKERHUB_USERNAME/$IMAGE_NAME:$BUILD_NUMBER
+                        '''
                     }
                 }
 
                 stage('Stop Old Container') {
                     steps {
-                        script {
-                            runOnDeployServer(
-                                "docker stop ${CONTAINER_NAME} || true"
-                            )
-
-                            runOnDeployServer(
-                                "docker rm ${CONTAINER_NAME} || true"
-                            )
-                        }
+                        sh '''
+                            docker stop $CONTAINER_NAME || true
+                            docker rm $CONTAINER_NAME || true
+                        '''
                     }
                 }
 
                 stage('Run New Container') {
                     steps {
-                        script {
-                            runOnDeployServer(
-                                "docker run -d --name ${CONTAINER_NAME} " +
-                                "--restart unless-stopped -p 9090:80 ${IMAGE_NAME}:latest"
-                            )
-                        }
+                        sh '''
+                            docker run -d \
+                                --name $CONTAINER_NAME \
+                                --restart unless-stopped \
+                                -p $HOST_PORT:$CONTAINER_PORT \
+                                $DOCKERHUB_USERNAME/$IMAGE_NAME:$BUILD_NUMBER
+                        '''
                     }
                 }
 
                 stage('Verify Deployment') {
                     steps {
-                        script {
-                            runOnDeployServer(
-                                "sleep 3 && docker ps --filter name=${CONTAINER_NAME} " +
-                                "&& curl -fsS -o /dev/null http://localhost:9090 " +
-                                "&& echo Website is running"
-                            )
-                        }
+                        sh '''
+                            sleep 5
+
+                            docker ps --filter "name=^/${CONTAINER_NAME}$"
+
+                            curl -fsS \
+                                http://localhost:$HOST_PORT \
+                                -o /dev/null
+
+                            echo "Website deployed successfully!"
+                        '''
                     }
                 }
             }
@@ -167,11 +143,17 @@ pipeline {
 
     post {
         success {
-            echo 'Done. Open your deployment server public IP on port 9090.'
+            echo """
+            Deployment Successful!
+
+            Image: ${DOCKERHUB_USERNAME}/${IMAGE_NAME}:${BUILD_NUMBER}
+            Container: ${CONTAINER_NAME}
+            Port: ${HOST_PORT}
+            """
         }
 
         failure {
-            echo 'Failed. Read the Console Output to find the stage that failed.'
+            echo 'Pipeline failed. Check Jenkins Console Output.'
         }
     }
 }
