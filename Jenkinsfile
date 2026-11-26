@@ -24,7 +24,7 @@ pipeline {
 
     environment {
 
-        DOCKERHUB_USERNAME = 'Suhailmc'
+        DOCKERHUB_USERNAME = 'suhailmc'
 
         DOCKERHUB_REPOSITORY = 'company-website'
 
